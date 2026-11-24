@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Bouquet ASCII</title>
+<style>
+/* VOICE: nocturno, hipnótico, de terminal
+   IDEA: un reproductor ASCII que convierte un ramo de flores en texto de color
+   PICTURE: el ramo en caracteres, girando, creciendo y floreciendo
+   COLOUR and TYPE: tinta negra #07080c, los colores los pone el propio ramo; monospace del sistema
+   LAYOUT: escena arriba y editor de código abajo; lado a lado en pantallas anchas */
+:root{color-scheme:dark;--bg:#07080c;--ed:#0e1117;--ink:#d7dbe6;--mut:#5b6273;--hl:#1a2030;--line:#1c2130}
+*{box-sizing:border-box;min-width:0}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);overflow:hidden}
+body{font:15px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace}
+.app{height:100vh;height:100dvh;display:grid;grid-template-rows:minmax(0,1fr) minmax(150px,32%)}
+.stage{position:relative;overflow:hidden;touch-action:none;cursor:crosshair}
+.stage canvas{position:absolute;inset:0;display:block}
+.hud{position:absolute;top:12px;right:12px;display:flex;gap:8px;z-index:2}
+.hud button{min-height:44px;padding:0 14px;border-radius:10px;border:1px solid #262c3a;background:rgba(14,17,23,.72);color:var(--ink);font:500 13px ui-monospace,Menlo,Consolas,monospace;cursor:pointer;-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px)}
+.hud button:hover{border-color:#3a4257}
+button:focus-visible{outline:2px solid #7aa2ff;outline-offset:2px}
+.love{position:absolute;left:12px;right:12px;top:72px;margin:0;text-align:center;font:600 clamp(17px,4.6vw,24px)/1.3 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;letter-spacing:.04em;white-space:pre-wrap;background:linear-gradient(90deg,#ff8ab3,#ff3b5c 35%,#c77dff 70%,#6fb2ff);-webkit-background-clip:text;background-clip:text;color:transparent;opacity:0;transition:opacity .8s;filter:drop-shadow(0 0 10px rgba(255,70,130,.5));pointer-events:none}
+.hint{position:absolute;left:0;right:0;bottom:12px;margin:0;text-align:center;font-size:13px;color:var(--mut);pointer-events:none;transition:opacity 1.2s}
+.editor{background:var(--ed);border-top:1px solid var(--line);display:flex;flex-direction:column;overflow:hidden}
+.bar{display:flex;align-items:center;gap:7px;padding:10px 12px;border-bottom:1px solid var(--line);font-size:13px;color:#8b93a7;white-space:nowrap;overflow:hidden}
+.bar i{width:11px;height:11px;border-radius:50%;flex:none}
+.bar i:nth-child(1){background:#ff5f57}.bar i:nth-child(2){background:#febc2e}.bar i:nth-child(3){background:#28c840}
+.bar span{margin-left:8px;overflow:hidden;text-overflow:ellipsis}
+.code{position:relative;flex:1;overflow:hidden;font-size:13px;line-height:20px}
+#lines{position:absolute;left:0;right:0;top:0;will-change:transform}
+.ln{display:flex;white-space:pre;padding-right:12px;color:#c9d1e3;transition:background .3s}
+.ln b{flex:none;width:3.6em;text-align:right;padding-right:1.2em;color:#3c4354;font-weight:400}
+.ln.on{background:var(--hl)}.ln.on b{color:#8b93a7}
+.k{color:#c792ea}.s{color:#c3e88d}.n{color:#f78c6c}.c{color:#56627a;font-style:italic}.f{color:#82aaff}
+@media(min-width:900px){
+  .app{grid-template-rows:minmax(0,1fr);grid-template-columns:minmax(0,1fr) minmax(0,480px)}
+  .editor{border-top:0;border-left:1px solid var(--line)}
+}
+</style>
+</head>
+<body>
+<main class="app">
+  <section class="stage" id="stage" aria-label="Ramo de flores animado en arte ASCII">
+    <canvas id="c"></canvas>
+    <div class="hud">
+      <button id="replay" type="button">↻ Repetir</button>
+      <button id="mode" type="button">Color</button>
+    </div>
+    <p class="love" id="love" aria-live="polite"></p>
+    <p class="hint" id="hint">Mueve el dedo o el mouse para soplar viento</p>
+  </section>
+  <section class="editor" aria-label="Código del renderizador">
+    <div class="bar"><i></i><i></i><i></i><span>ascii_bouquet.js — Renderer.convert() + draw()</span></div>
+    <div class="code" id="code"><div id="lines"></div></div>
+  </section>
+</main>
+
+<script>
+{
+const SRC = String.raw`// ascii_bouquet.js — cada cuadro se convierte en texto de color
+const RAMP = ' .:-=+*xoX#%&@';
+const EDGE = ['-', '\\', '|', '/'];
+
+class Renderer {
+  constructor(cols, rows) {
+    this.cols = cols;
+    this.rows = rows;
+    this.saturation = 1.0;
+    this.edges = 0.6;
+  }
+
+  convert(frame) {
+    const { cols, rows } = this;
+    const px = frame.data;
+    const lum = new Float32Array(cols * rows);
+
+    for (let i = 0; i < cols * rows; i++) {
+      const r = px[i * 4], g = px[i * 4 + 1], b = px[i * 4 + 2];
+      lum[i] = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+    }
+
+    const glyph = [], fg = [];
+    for (let y = 1; y < rows - 1; y++) {
+      for (let x = 1; x < cols - 1; x++) {
+        const i = y * cols + x;
+        if (lum[i] < 0.06) continue;
+
+        // Sobel simplificado: detecta bordes
+        const gx = lum[i + 1] - lum[i - 1];
+        const gy = lum[i + cols] - lum[i - cols];
+        const mag = Math.hypot(gx, gy) / 2;
+        const ang = (Math.atan2(gy, gx) * 180 / Math.PI + 270) % 180;
+
+        let ch = RAMP[Math.round(lum[i] * (RAMP.length - 1))];
+        if (mag > 0.8 - 0.6 * this.edges && lum[i] > 0.12) {
+          ch = EDGE[Math.floor(((ang + 22.5) % 180) / 45)];
+        }
+
+        // brillo normalizado: color vivo, densidad por luz
+        const v = Math.max(px[i * 4], px[i * 4 + 1], px[i * 4 + 2]);
+        const k = 255 / v;
+        fg[i] = [0, 1, 2].map(c => px[i * 4 + c] * (0.4 + 0.6 * k));
+        glyph[i] = ch;
+      }
+    }
+    return { glyph, fg };
+  }
+
+  draw({ glyph, fg }, ctx, cw, ch) {
+    ctx.fillStyle = '#07080c';
+    ctx.fillRect(0, 0, this.cols * cw, this.rows * ch);
+    glyph.forEach((g, i) => {
+      if (!g) return;
+      const x = i % this.cols, y = (i / this.cols) | 0;
+      ctx.fillStyle = 'rgb(' + fg[i].join(',') + ')';
+      ctx.fillText(g, x * cw, y * ch);
+    });
+  }
+}
+
+function loop(now) {
+  const t = (now - start) / 1000 % 22;
+  scene(t);                    // jarrón, tallos, rosas, hortensias
+  const frame = off.getImageData(0, 0, cols, rows);
+  renderer.draw(renderer.convert(frame), ctx, cw, ch);
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);`;
+
+const LINES = SRC.split('\n');
+const KW = /^(const|let|for|if|else|return|function|class|new|this|continue|constructor)$/;
+const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+function hl(line){
+  const re = /(\/\/.*$)|('(?:[^'\\]|\\.)*')|(\b\d+(?:\.\d+)?\b)|([A-Za-z_]\w*)/g;
+  let out = '', last = 0, m;
+  while ((m = re.exec(line))) {
+    out += esc(line.slice(last, m.index));
+    const tok = esc(m[0]);
+    if (m[1]) out += '<span class="c">' + tok + '</span>';
+    else if (m[2]) out += '<span class="s">' + tok + '</span>';
+    else if (m[3]) out += '<span class="n">' + tok + '</span>';
+    else if (KW.test(m[4])) out += '<span class="k">' + tok + '</span>';
+    else if (line[re.lastIndex] === '(') out += '<span class="f">' + tok + '</span>';
+    else out += tok;
+    last = re.lastIndex;
+  }
+  return out + esc(line.slice(last));
+}
+const linesEl = document.getElementById('lines');
+const codeEl = document.getElementById('code');
+linesEl.innerHTML = LINES.map((l, i) => '<div class="ln"><b>' + (i + 241) + '</b><span>' + (hl(l) || ' ') + '</span></div>').join('');
+const lineEls = linesEl.children;
+
+/* ---------- escena ---------- */
+const stage = document.getElementById('stage');
+const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+const off = document.createElement('canvas'), oc = off.getContext('2d', { willReadFrequently: true });
+const RAMP = ' .:-=+*xoX#%&@', EDGE = ['-', '\\', '|', '/'];
+const T = 22;
+const RM = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+let W = 0, H = 0, cols = 0, rows = 0, cw = 6, chH = 10, noise = new Float32Array(0);
+let wind = 0, windT = 0, mode = 0, start = performance.now(), last = 0, scroll = 0, cur = -1;
+const FL = [];
+
+function mulberry(a){ return () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+
+function build(seed){
+  const R = mulberry(seed); FL.length = 0;
+  const hues = [350, 338, 4, 322, 345, 300, 12];
+  for (let i = 0; i < 14; i++) {
+    const kind = i % 5 === 2 ? 'hyd' : i % 4 === 3 ? 'daisy' : 'rose';
+    const f = { kind, az: i * 2.399 + R() * 0.4, tl: 0.1 + R() * 0.52, L: 40 + R() * 22,
+      r: kind === 'hyd' ? 12 : kind === 'daisy' ? 9 : 10 + R() * 3.5,
+      h: hues[Math.floor(R() * hues.length)], d: R() * 2.2, ph: R() * 6.28,
+      side: R() < .5 ? -1 : 1, lh: 105 + R() * 35 };
+    if (kind === 'hyd') {
+      f.h = 212 + R() * 45;
+      f.dots = Array.from({ length: 28 }, () => { const a = R() * 6.28, d = Math.sqrt(R());
+        return { dx: Math.cos(a) * d, dy: Math.sin(a) * d * 0.85, h: f.h + R() * 40 - 20, l: 42 + R() * 28 }; });
+    }
+    FL.push(f);
+  }
+}
+
+function resize(){
+  const r = stage.getBoundingClientRect();
+  W = r.width; H = r.height;
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
+  cv.style.width = W + 'px'; cv.style.height = H + 'px';
+  const fs = Math.max(7, Math.min(11, Math.min(W, H * 0.7) / 62));
+  chH = fs; cw = fs * 0.6;
+  cols = Math.max(10, Math.floor(W / cw)); rows = Math.max(10, Math.floor(H / chH));
+  off.width = cols; off.height = rows;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.font = fs + 'px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace';
+  ctx.textBaseline = 'top';
+  noise = Float32Array.from({ length: cols * rows }, Math.random);
+}
+
+const cl = x => x < 0 ? 0 : x > 1 ? 1 : x;
+const ease = x => 1 - Math.pow(1 - cl(x), 3);
+
+function petal(x, y, rx, ry, a, fill, U){
+  oc.beginPath(); oc.ellipse(x, y, Math.max(rx, .1), Math.max(ry, .1), a, 0, 6.2832);
+  oc.fillStyle = fill; oc.fill();
+  oc.lineWidth = .35 * U; oc.strokeStyle = 'rgba(0,0,0,.45)'; oc.stroke();
+}
+
+function flower(f, x, y, b, l, t, U){
+  const r = f.r * U;
+  if (b <= 0) { petal(x, y, r * .2, r * .3, 0, 'hsl(' + (f.h * .3 + 80) + ',45%,' + 30 * l + '%)', U); return; }
+  if (f.kind === 'rose') {
+    const R = r * (.3 + .7 * b), n = Math.floor(5 + b * 13), s = t * .25 + f.ph;
+    for (let i = n - 1; i >= 0; i--) {
+      const k = i / n, a = i * 2.399 + s, d = R * .5 * k;
+      petal(x + Math.cos(a) * d, y + Math.sin(a) * d * .8, R * (.32 + .42 * k), R * (.22 + .3 * k), a,
+        'hsl(' + f.h + ',85%,' + (24 + 38 * k) * l + '%)', U);
+    }
+    oc.beginPath(); oc.arc(x, y, R * .14, 0, 6.2832); oc.fillStyle = 'hsl(' + f.h + ',80%,' + 14 * l + '%)'; oc.fill();
+  } else if (f.kind === 'hyd') {
+    const n = Math.ceil(f.dots.length * b);
+    for (let i = 0; i < n; i++) { const d = f.dots[i];
+      petal(x + d.dx * r * b, y + d.dy * r * b, r * .26 * (.5 + .5 * b), r * .24 * (.5 + .5 * b), 0, 'hsl(' + d.h + ',72%,' + d.l * l + '%)', U); }
+  } else {
+    for (let i = 0; i < 12; i++) { const a = i / 12 * 6.2832 + t * .15 + f.ph;
+      petal(x + Math.cos(a) * r * .5 * b, y + Math.sin(a) * r * .42 * b, r * .42 * b, r * .13, a, 'hsl(48,95%,' + 60 * l + '%)', U); }
+    oc.beginPath(); oc.arc(x, y, r * .26 * b, 0, 6.2832); oc.fillStyle = 'hsl(28,70%,' + 24 * l + '%)'; oc.fill();
+  }
+}
+
+function item(it, t, mouthY, U){
+  const { f, g, tx, ty, sx, z } = it;
+  if (g <= 0) return;
+  const l = .62 + .38 * (z + 1) / 2;
+  const mx = sx, my = mouthY + 2 * U, qx = mx + (tx - mx) * .15, qy = my - (my - ty) * .7;
+  const P = s => [(1 - s) * (1 - s) * mx + 2 * (1 - s) * s * qx + s * s * tx, (1 - s) * (1 - s) * my + 2 * (1 - s) * s * qy + s * s * ty];
+  oc.strokeStyle = 'hsl(125,48%,' + 27 * l + '%)'; oc.lineWidth = 1.3 * U; oc.lineCap = 'round';
+  oc.beginPath(); oc.moveTo(mx, my);
+  for (let s = .05; s < g + .05; s += .05) { const p = P(Math.min(s, g)); oc.lineTo(p[0], p[1]); }
+  oc.stroke();
+  const lf = ease((t - 3 - f.d * .5) / 1.8);
+  if (lf > 0) { const p = P(.5); oc.save(); oc.translate(p[0], p[1]); oc.rotate(f.side * .8);
+    petal(f.side * 4.5 * U * lf, 0, 5.5 * U * lf, 2 * U * lf, 0, 'hsl(' + f.lh + ',55%,' + 34 * l + '%)', U); oc.restore(); }
+  if (g < .98) return;
+  flower(f, tx, ty, ease((t - 4.6 - f.d) / 3.5), l, t, U);
+}
+
+function vase(cx, top, bot, U, rot){
+  const nw = 8 * U, bw = 16 * U, fw = 9 * U, h = bot - top;
+  oc.save();
+  oc.beginPath(); oc.moveTo(cx - nw - 2.5 * U, top); oc.lineTo(cx + nw + 2.5 * U, top); oc.lineTo(cx + nw, top + 3 * U);
+  oc.bezierCurveTo(cx + bw * 1.3, top + h * .35, cx + bw, top + h * .85, cx + fw, bot);
+  oc.lineTo(cx - fw, bot);
+  oc.bezierCurveTo(cx - bw, top + h * .85, cx - bw * 1.3, top + h * .35, cx - nw, top + 3 * U);
+  oc.closePath();
+  const gr = oc.createLinearGradient(cx - bw * 1.2, 0, cx + bw * 1.2, 0);
+  gr.addColorStop(0, 'hsl(240,60%,12%)'); gr.addColorStop(.35, 'hsl(228,72%,50%)');
+  gr.addColorStop(.52, 'hsl(214,85%,66%)'); gr.addColorStop(1, 'hsl(252,55%,10%)');
+  oc.fillStyle = gr; oc.fill(); oc.clip();
+  oc.fillStyle = 'rgba(0,0,0,.38)';
+  for (let y = top + 4 * U; y < bot; y += 3.2 * U) oc.fillRect(cx - bw * 1.5, y, bw * 3, 1.1 * U);
+  for (let k = 0; k < 10; k++) {
+    const a = k / 10 * 6.2832 + rot, c = Math.cos(a);
+    if (c < 0) continue;
+    oc.fillStyle = 'hsla(' + (285 + k * 9) + ',85%,66%,' + (.2 + .55 * c) + ')';
+    oc.fillRect(cx + Math.sin(a) * bw * .95 - .9 * U * c, top + h * .3, 1.8 * U * c, h * .42);
+  }
+  oc.restore();
+}
+
+function scene(t){
+  oc.setTransform(1, 0, 0, 1, 0, 0); oc.fillStyle = '#000'; oc.fillRect(0, 0, cols, rows);
+  oc.setTransform(cols / W, 0, 0, rows / H, 0, 0);
+  const U = Math.min(W / 96, H / 128), cx = W / 2, rot = t * .35;
+  const vin = ease((t - .2) / 2.2), dy = (1 - vin) * H * .6;
+  const bot = H * .94 + dy, mouthY = bot - 36 * U;
+  const items = FL.map(f => {
+    const g = ease((t - 1.8 - f.d * .5) / 2.6), az = f.az + rot;
+    const Rr = Math.sin(f.tl) * f.L * U, hgt = Math.cos(f.tl) * f.L * U;
+    const sway = (wind * 14 + Math.sin(t * 1.4 + f.ph) * 2.5) * U * (f.L / 60) * g;
+    return { f, g, z: Math.cos(az), tx: cx + Math.sin(az) * Rr * g + sway, ty: mouthY - hgt * g, sx: cx + Math.sin(az) * 4 * U };
+  }).sort((a, b) => a.z - b.z);
+  items.filter(i => i.z < 0).forEach(i => item(i, t, mouthY, U));
+  vase(cx, mouthY, bot, U, rot);
+  const gl = ease((t - 2.6) / 1.5);
+  if (gl > 0) for (let k = 0; k < 7; k++) {
+    const a = -1.3 + k * .43 + Math.sin(t * .9 + k) * .05;
+    oc.save(); oc.translate(cx + Math.sin(a) * 6 * U, mouthY + U); oc.rotate(a);
+    petal(0, -5 * U * gl, 2.2 * U * gl, 6 * U * gl, 0, 'hsl(' + (110 + k * 6) + ',55%,' + (26 + k % 2 * 10) + '%)', U); oc.restore();
+  }
+  items.filter(i => i.z >= 0).forEach(i => item(i, t, mouthY, U));
+}
+
+const MSG = 'con amor, Wilson para Lupe <3', GL = '.:-=+*xoX#%&@/|';
+const loveEl = document.getElementById('love');
+function caption(t){
+  if (t < 7 || t > 18.4) { loveEl.style.opacity = 0; return; }
+  loveEl.style.opacity = 1;
+  const n = (t - 7) * 14; let o = '';
+  for (let i = 0; i < MSG.length; i++) o += (i < n - 4 || MSG[i] === ' ') ? MSG[i] : i < n ? GL[Math.random() * GL.length | 0] : ' ';
+  loveEl.textContent = o;
+}
+
+function render(t){
+  const rv = 1, edges = true, fade = cl((t - 18.6) / 2.6);
+  scene(t);
+  const d = oc.getImageData(0, 0, cols, rows).data, n = cols * rows;
+  const L = new Float32Array(n);
+  for (let i = 0; i < n; i++) L[i] = (.299 * d[i * 4] + .587 * d[i * 4 + 1] + .114 * d[i * 4 + 2]) / 255;
+  ctx.fillStyle = '#07080c'; ctx.fillRect(0, 0, W, H);
+  const last = RAMP.length - 1;
+  for (let y = 0; y < rows; y++) for (let x = 0; x < cols; x++) {
+    const i = y * cols + x, l = L[i];
+    if (l < .05 || noise[i] < fade || noise[i] > rv) continue;
+    let c;
+    if ((fade > 0 && noise[i] < fade + .1) || (rv < 1 && noise[i] > rv - .12)) c = RAMP[1 + (Math.random() * last | 0)];
+    else {
+      const gx = x > 0 && x < cols - 1 ? L[i + 1] - L[i - 1] : 0;
+      const gy = y > 0 && y < rows - 1 ? L[i + cols] - L[i - cols] : 0;
+      if (edges && Math.hypot(gx, gy) / 2 > .2 && l > .12) {
+        const ang = (Math.atan2(gy, gx) * 180 / Math.PI + 270) % 180;
+        c = EDGE[Math.floor(((ang + 22.5) % 180) / 45) % 4];
+      } else c = RAMP[Math.min(last, Math.round(l * last) + 1)];
+    }
+    const r = d[i * 4], g = d[i * 4 + 1], b = d[i * 4 + 2];
+    if (mode === 0) { const k = 255 / Math.max(r, g, b, 1);
+      ctx.fillStyle = 'rgb(' + (r * (.4 + .6 * k) | 0) + ',' + (g * (.4 + .6 * k) | 0) + ',' + (b * (.4 + .6 * k) | 0) + ')'; }
+    else if (mode === 1) { const v = 110 + 145 * l | 0; ctx.fillStyle = 'rgb(' + v + ',' + v + ',' + v + ')'; }
+    else ctx.fillStyle = 'rgb(30,' + (110 + 145 * l | 0) + ',70)';
+    ctx.fillText(c, x * cw, y * chH);
+  }
+}
+
+function code(t){
+  const idx = Math.min(LINES.length - 1, Math.floor(t / T * LINES.length));
+  if (idx !== cur) { if (cur >= 0 && lineEls[cur]) lineEls[cur].classList.remove('on'); lineEls[idx].classList.add('on'); cur = idx; }
+  const target = Math.max(0, idx * 20 - codeEl.clientHeight * .35);
+  scroll += (target - scroll) * .08;
+  linesEl.style.transform = 'translateY(' + (-scroll) + 'px)';
+}
+
+function frame(now){
+  requestAnimationFrame(frame);
+  wind += (windT - wind) * .05;
+  if (now - last < 33) return;
+  last = now;
+  const t = RM ? 14 : ((now - start) / 1000) % T;
+  if (W > 0 && H > 0) render(t);
+  code(t);
+  caption(t);
+}
+
+const hint = document.getElementById('hint');
+stage.addEventListener('pointermove', e => {
+  const r = stage.getBoundingClientRect();
+  windT = Math.max(-1, Math.min(1, ((e.clientX - r.left) / r.width - .5) * 2.2));
+  hint.style.opacity = 0;
+});
+stage.addEventListener('pointerleave', () => { windT = 0; });
+stage.addEventListener('pointerup', e => { if (e.pointerType !== 'mouse') windT = 0; });
+
+document.getElementById('replay').addEventListener('click', () => {
+  build((Math.random() * 1e9) | 0); start = performance.now(); scroll = 0;
+});
+const modeBtn = document.getElementById('mode'), MODES = ['Color', 'Mono', 'Matrix'];
+modeBtn.addEventListener('click', () => { mode = (mode + 1) % 3; modeBtn.textContent = MODES[mode]; });
+
+const ro = new ResizeObserver(resize);
+ro.observe(stage);
+build(20261123);
+resize();
+requestAnimationFrame(frame);
+}
+</script>
+</body>
+</html>
